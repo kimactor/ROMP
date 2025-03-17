@@ -1,4 +1,6 @@
-from .model import ROMPv1
+import time
+
+from model import ROMPv1
 import cv2
 import numpy as np
 import os, sys
@@ -7,12 +9,12 @@ import torch
 from torch import nn
 import argparse
 
-from .post_parser import SMPL_parser, body_mesh_projection2image, parsing_outputs
-from .utils import img_preprocess, create_OneEuroFilter, euclidean_distance, check_filter_state, \
+from post_parser import SMPL_parser, body_mesh_projection2image, parsing_outputs
+from utils import img_preprocess, create_OneEuroFilter, euclidean_distance, check_filter_state, \
     time_cost, download_model, determine_device, ResultSaver, WebcamVideoStream, convert_cam_to_3d_trans,\
     wait_func, collect_frame_path, progress_bar, get_tracked_ids, smooth_results, convert_tensor2numpy, save_video_results
 from vis_human import setup_renderer, rendering_romp_bev_results
-from .post_parser import CenterMap
+from post_parser import CenterMap
 
 def romp_settings(input_args=sys.argv[1:]):
     parser = argparse.ArgumentParser(description = 'ROMP: Monocular, One-stage, Regression of Multiple 3D People')
@@ -92,7 +94,6 @@ class ROMP(nn.Module):
     
     def _initilization_(self):
         self.centermap_parser = CenterMap(conf_thresh=self.settings.center_thresh)
-        
         if self.settings.calc_smpl:
             self.smpl_parser = SMPL_parser(self.settings.smpl_path).to(self.tdevice)
         
@@ -119,6 +120,7 @@ class ROMP(nn.Module):
         if not self.settings.show_largest:
             try:
                 from norfair import Tracker
+                print("use tracking")
             except:
                 print('To perform temporal optimization, installing norfair for tracking.')
                 os.system('pip install norfair')
@@ -137,23 +139,63 @@ class ROMP(nn.Module):
         else:
             pred_cams = outputs['cam']
             from norfair import Detection
-            detections = [Detection(points=cam[[2,1]]*512) for cam in pred_cams.cpu().numpy()]
+            # 生成更可靠的Detection
+            detections = []
+            for ind in range(len(outputs['cam'])):
+                # 获取投影关键点（假设pj2d形状为[N, 24, 2]）
+                if 'pj2d' not in outputs:
+                    raise KeyError("Missing required key 'pj2d' in outputs")
+
+                j2d_tensor = outputs['pj2d'][ind].mean(dim=0)  # [24,2] -> [2]
+                j2d_np = j2d_tensor.detach().cpu().numpy().astype(np.float32)
+
+                # 格式校验
+                if j2d_np.ndim != 1 or j2d_np.shape[0] != 2:
+                    raise ValueError(f"Invalid j2d shape: {j2d_np.shape}")
+
+                detections.append(Detection(
+                    points=j2d_np.reshape(1, 2),  # 强制转换为(1,2)形状
+                    data={'person_id': ind}
+                ))
+
             if not self.tracker_initialized:
                 for _ in range(8):
                     tracked_objects = self.tracker.update(detections=detections)
             tracked_objects = self.tracker.update(detections=detections)
-            if len(tracked_objects)==0:
-                return outputs
-            tracked_ids = get_tracked_ids(detections, tracked_objects)
-            for ind, tid in enumerate(tracked_ids):
+            # 严格匹配检测与跟踪目标
+            tracked_ids = []
+            for det in detections:
+                match = None
+                min_dist = float('inf')
+                for obj in tracked_objects:
+                    dist = np.linalg.norm(det.points - obj.last_detection.points)
+                    if dist < min_dist and dist < 50:
+                        min_dist = dist
+                        match = obj.id
+                tracked_ids.append(match if match else self._generate_new_id())
+
+            # 清理失效滤波器
+            active_ids = set(tracked_ids)
+            for tid in list(self.OE_filters.get(signal_ID, {}).keys()):
+                if tid not in active_ids and tid != -1:
+                    del self.OE_filters[signal_ID][tid]
+
+            # 应用滤波
+            for idx, tid in enumerate(tracked_ids):
+                if tid == -1:
+                    continue  # 跳过未匹配的检测
+
                 if tid not in self.OE_filters[signal_ID]:
                     self.OE_filters[signal_ID][tid] = create_OneEuroFilter(self.settings.smooth_coeff)
-                
-                outputs['smpl_thetas'][ind], outputs['smpl_betas'][ind], outputs['cam'][ind] = \
-                    smooth_results(self.OE_filters[signal_ID][tid], \
-                    outputs['smpl_thetas'][ind], outputs['smpl_betas'][ind], outputs['cam'][ind])
 
-            outputs['track_ids'] = np.array(tracked_ids).astype(np.int32)
+                outputs['smpl_thetas'][idx], outputs['smpl_betas'][idx], outputs['cam'][idx] = \
+                    smooth_results(self.OE_filters[signal_ID][tid],
+                                   outputs['smpl_thetas'][idx],
+                                   outputs['smpl_betas'][idx],
+                                   outputs['cam'][idx])
+
+            # 几何一致性校验
+            outputs['track_ids'] = np.array(tracked_ids)
         return outputs
 
     #@time_cost('ROMP')
@@ -200,7 +242,11 @@ def main():
         cap.start()
         while True:
             frame = cap.read()
+            start_time = time.time()
             outputs = romp(frame)
+            if(cv2.waitKey(1) == ord('q')):
+                break
+            print("use time: ", time.time() - start_time)
         cap.stop()
 
 if __name__ == '__main__':

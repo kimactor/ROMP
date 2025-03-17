@@ -115,6 +115,9 @@ class WebcamVideoStream(object):
         # from the stream
         try:
             self.stream = cv2.VideoCapture(src)
+            self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, 960)
+            self.stream.set(cv2.CAP_PROP_FRAME_HEIGHT, 540)
+            self.stream.set(cv2.CAP_PROP_FPS, 60)
         except:
             self.stream = cv2.VideoCapture("/dev/video{}".format(src), cv2.CAP_V4L2)
         
@@ -257,7 +260,8 @@ def check_filter_state(OE_filters, signal_ID, show_largest=False, smooth_coeff=3
         del OE_filters[signal_ID]
 
 def create_OneEuroFilter(smooth_coeff):
-    return {'smpl_thetas': OneEuroFilter(smooth_coeff, 0.7), 'cam': OneEuroFilter(1.6, 0.7), 'smpl_betas': OneEuroFilter(0.6, 0.7), 'global_rot': OneEuroFilter(smooth_coeff, 0.7)}
+    oneEuro_beta = 0.7
+    return {'smpl_thetas': OneEuroFilter(smooth_coeff, oneEuro_beta), 'cam': OneEuroFilter(1.6, oneEuro_beta), 'smpl_betas': OneEuroFilter(0.6, oneEuro_beta), 'global_rot': OneEuroFilter(smooth_coeff, oneEuro_beta)}
 
 
 def smooth_results(filters, body_pose=None, body_shape=None, cam=None):

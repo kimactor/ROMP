@@ -1,0 +1,10 @@
+plotly
+open3d
+addict
+loguru
+norfair
+h5py
+imageio-ffmpeg
+pyrender
+joblib
+pandas

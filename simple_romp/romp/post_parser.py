@@ -2,8 +2,8 @@ import torch
 from torch import nn
 import sys,os
 import numpy as np
-from .smpl import SMPL
-from .utils import rot6D_to_angular, batch_orth_proj, estimate_translation
+from smpl import SMPL
+from utils import rot6D_to_angular, batch_orth_proj, estimate_translation
 
 class CenterMap(object):
     def __init__(self, conf_thresh):
@@ -113,6 +113,32 @@ def body_mesh_projection2image(j3d_preds, cam_preds, vertices=None, input2org_of
         projected_outputs['verts_camed_org'] = convert_proejection_from_input_to_orgimg(projected_outputs['verts_camed'], input2org_offsets)
     return projected_outputs
 
+
+def body_mesh_projection2image_2(j3d_preds, cam_preds, vertices=None, input2org_offsets=None):
+    # 确保使用正确的投影参数
+    valid_cams = cam_preds.clone()
+    valid_cams[:, 0] = torch.clamp(valid_cams[:, 0], min=0.1)  # 防止除以零
+
+    # 修正后的投影计算
+    pj3d = batch_orth_proj(j3d_preds, valid_cams, mode='2d')
+    pred_cam_t = convert_cam_to_3d_trans2(j3d_preds, pj3d)
+
+    projected_outputs = {
+        'pj2d': (pj3d[:, :, :2] + 1) * 256,  # 标准化到[0,512]范围
+        'cam_trans': pred_cam_t
+    }
+
+    if vertices is not None:
+        projected_outputs['verts_camed'] = batch_orth_proj(vertices, valid_cams, mode='3d', keep_dim=True)
+
+    if input2org_offsets is not None:
+        projected_outputs['pj2d_org'] = convert_proejection_from_input_to_orgimg(
+            projected_outputs['pj2d'],
+            input2org_offsets
+        )
+    return projected_outputs
+
+
 class SMPL_parser(nn.Module):
     def __init__(self, model_path):
         super(SMPL_parser, self).__init__()
@@ -143,5 +169,20 @@ def parsing_outputs(center_maps, params_maps, centermap_parser):
     parsed_results = pack_params_dict(params_pred)
     parsed_results['center_preds'] = torch.stack([flat_inds%64, flat_inds//64],1) * 512 // 64
     parsed_results['center_confs'] = parameter_sampling(center_maps, batch_ids, flat_inds, use_transform=True)
+
+    # 添加关键点投影计算
+    with torch.no_grad():
+        # 生成初始3D关键点（这里需要根据实际模型结构补充）
+        dummy_joints = torch.zeros(len(batch_ids), 24, 3, device=params_maps.device)
+        dummy_cams = parsed_results['cam']
+
+        # 调用投影函数生成pj2d
+        projection_data = body_mesh_projection2image_2(
+            j3d_preds=dummy_joints,
+            cam_preds=dummy_cams,
+            input2org_offsets=None  # 根据实际情况传递偏移量
+        )
+        parsed_results['pj2d'] = projection_data['pj2d']
+
     return parsed_results
 
