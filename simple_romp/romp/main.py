@@ -74,6 +74,7 @@ class ROMP(nn.Module):
     def _build_model_(self):
         if not self.settings.onnx:
             model = ROMPv1().eval()
+            model.half()
             model.load_state_dict(torch.load(self.settings.model_path, map_location=self.tdevice))
             model = model.to(self.tdevice)
             self.model = nn.DataParallel(model)
@@ -140,6 +141,8 @@ class ROMP(nn.Module):
             pred_cams = outputs['cam']
             from norfair import Detection
             # 生成更可靠的Detection
+
+            track_use_time = time.time()
             detections = []
             for ind in range(len(outputs['cam'])):
                 # 获取投影关键点（假设pj2d形状为[N, 24, 2]）
@@ -196,6 +199,7 @@ class ROMP(nn.Module):
 
             # 几何一致性校验
             outputs['track_ids'] = np.array(tracked_ids)
+            print("track use time: ", time.time() - track_use_time)
         return outputs
 
     #@time_cost('ROMP')
